@@ -1,0 +1,1111 @@
+
+Дорогой друг! Спасибо за проявленный интерес.
+
+Ниже - код, который использовался при расчетах и построении графиков для поста "The eICU Collaborative Research Database. Разведанализ таблицы Patient"
+
+Пока что содержимое документа плохо структурировано. Ведутся работы по приведению написанного в удобоваримый вид :)  
+
+ 
+
+---
+title: "База данных eICU. Разведанализ таблицы patient"
+author: "Sergei Vladimirov"
+date: "2022-08-28"
+output: 
+  html_document:
+    theme: bootstrap
+    highlight: espresso
+
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+[The electronic ICU Collaborative Research Database (eICU CRD)](https://eicu-crd.mit.edu) сформирована на основе 200 тысяч госпитализаций в отделения интенсивной терапии в 200 клиниках США в 2014-2015 гг. В базе три десятка [взаимосвязанных таблиц](https://mit-lcp.github.io/eicu-schema-spy/relationships.html) с витальными показателями, демографическими данными, информацией о диагнозах и лечении. Данные собраны при помощи телемедицинской программы [Philips eICU](https://www.usa.philips.com/healthcare/resources/landing/teleicu) в партнерстве с лабораторией вычислительный физиологии Массачусетского технологического института. Все данные анонимизированы для соблюдения норм Закона о передаче данных и учете в системе медицинского страхования США (Health Insurance Portability and Accountability Act, HIPAA).
+
+В базе три десятка [взаимосвязанных таблиц](https://mit-lcp.github.io/eicu-schema-spy/relationships.html). Ниже будет описан разведочный анализ содержимого одной из них — *patient*.  Эта таблица содержит демографические и антропометрические данные, административную и логистическую информацию — например, тип клиники, время поступления и выписки, диагноз при поступлении, статус при выписке.
+
+Манипуляциии с данными и построение графиков выполнены в программе RStudio на языке R. Страницу с кодом можно найти на гитхабе.
+
+### Колонки-идентификаторы
+Обязательное условие для попадания пациента в базу данных  — как минимум однократное нахождение в реанимации за одну госпитализацию. Таких попаданий в реанимацию, как и госпитализаций, могло быть несколько.
+
+> 139 тысяч пациентов, 166 тысяч госпитализаций, 200 тысяч пребываний в реанимации
+
+Этим обусловлено разное количество пациентов и госпитализаций в eICU CRD. Каждому пациенту присвоен уникальный индивидуальный номер *uniquepid* (не менялся в случае повторной госпитализации), номер госпитализации *patienthealthsystemstayid* (менялся при повторной госпитализации), номер госпитализации в интенсивную терапию *patientunitstayid* (менялся при повторном попадании в реанимацию, в т.ч. в течение одной госпитализации).
+
+
+```{r   setting the SQLite, echo = FALSE, include=FALSE}
+
+#подгрузка библиотек
+library(tidyverse)
+library(magrittr)
+library(hms)
+library(RSQLite)
+library(DBI)
+library(kableExtra)
+library(ggsci)
+library(patchwork)
+library(tufte)
+library(ggthemes)
+
+# В этом скрипте работаю с SQL
+
+patient <- read_csv('/Users/serhio/physionet_data/e-icu-full/patient.csv')
+adults <- read_csv('/Users/serhio/R_PROJECTS/e_icu_full/adults_table.csv')
+
+mydb <- dbConnect(RSQLite::SQLite(), "")
+dbWriteTable(mydb, "patient", patient)
+dbWriteTable(mydb, "adults", adults)
+dbListTables(mydb)
+
+```
+*Результат запроса к таблице patient, в котором госпитализации и попадания в реанимацию сгруппированы по уникальным номерам и отсортированы по общему количеству госпитализаций. Взяты первые 10 пациентов:*
+```{r freq_ranking, echo=FALSE}
+top_10_fr <- dbGetQuery(     #группирую по уникальным номерам     
+  mydb, 
+  'SELECT
+         uniquepid,
+          count(distinct(patienthealthsystemstayid)) as "Количество госпитализаций",
+        
+         count(distinct(patientunitstayid)) as "Количество поступлений в реанимацию"
+      
+        
+   FROM
+      patient
+   GROUP BY uniquepid
+   ORDER BY "Количество госпитализаций" desc
+   LIMIT 10  '
+)
+
+top_10_fr%>%
+  kable(caption = "Группировка госпитализаций по уникальному номеру пациента") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+           
+
+
+```
+```{r, echo=FALSE}
+hosp_rate <- dbGetQuery( 
+mydb, 
+'SELECT
+         uniquepid,
+          count(distinct(patienthealthsystemstayid)) as "hosp_stays",
+        
+         count(distinct(patientunitstayid)) as "unit_stays"
+      
+        
+   FROM
+      patient
+   GROUP BY uniquepid
+   ORDER BY "Количество госпитализаций" desc
+   '
+)
+
+
+for (i in 1:nrow(hosp_rate)){
+if(hosp_rate$hosp_stays[i] == 1) {
+  hosp_rate$n[i] <- 'Однократно'
+} else if (hosp_rate$hosp_stays[i] == 2){
+  hosp_rate$n[i] <- 'Двукратно'
+} else {
+  hosp_rate$n[i] <- 'Более двух раз'
+}
+}
+
+
+ggplot(hosp_rate, aes(x = n))+
+  geom_bar(stat = 'count')+
+  geom_text(aes(label = ..count..), stat = "count", vjust = -1,
+            colour = "black", size = 3)+
+  theme_tufte(base_family = 'sans')+
+  scale_fill_manual(values = c("aquamarine4","black"))+
+  xlab("")+
+  ylab('')+
+  scale_y_continuous(
+    breaks = c(0,5000,10000,15000,20000),
+    labels = c("0","5k","10k","15k","20k"))+
+  ggtitle("Сколько раз один и тот же пациент попадал в стационар
+за 2014-2015 гг",
+          'Данные: eICU CRD')+
+  theme(axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+        )
+
+```
+
+
+
+Ниже отфильтрованы данные по уникальному номеру первого пациента из таблицы выше.
+Можно поскроллить в разные стороны и ознакомиться со всеми колонками.
+
+*Как видно из запроса, это молодая женщина, часто поступавшая в стацинар преимущественно с эндокринологическими проблемами:*
+```{r first_patient, echo=FALSE}
+
+first_pat <- patient %>%
+  filter(uniquepid == "021-239346")
+
+first_pat %>%
+  kable("html") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>% 
+  scroll_box(height = "300px")
+  
+```
+
+```{r head of table , include = FALSE, echo=FALSE}
+hosp_rank <- dbGetQuery(        
+  mydb, 
+  'SELECT
+        patienthealthsystemstayid as adm_id,
+        
+        
+        count(distinct(patientunitstayid)) / 
+        count(distinct(patienthealthsystemstayid)) as ratio
+      
+        
+   FROM
+      patient
+   GROUP BY adm_id
+   ORDER BY ratio desc
+   LIMIT 10  '
+)
+
+
+hosp_rank %>%
+  kbl() %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left") 
+```
+
+### Возраст и пол (*age* и *gender*)
+Из всех поступавших в интенсивную терапию —  92 тысячи женщин и 108 тысяч мужчин.
+В базе менее десятой процента пациентов младше 16 лет —  здесь и далее они исключены из анализа.
+Чтобы предотвратить раскрытие личности, у пациентов старше 89 лет вместо точного возраста в колонке *age* изначально проставлено значение ‘>89’ (согласно HIPAA, возраст [старше 89 лет](https://www.luc.edu/its/aboutits/itspoliciesguidelines/hipaainformation/18hipaaidentifiers/) является деанонимирующим фактором). 
+В ходе анализа значения ‘>89’ заменены на ’90’ для удобства расчетов.
+
+> Получившийся размах возраста — между 16 и 90 годами с преобладанием пожилых пациентов: медианный возраст — 65 лет, средний — 63 года.
+
+```{r, echo=FALSE, fig.align='center', warning=FALSE}
+ ggplot(adults, aes(x = age_group)) + # рисуем график
+  geom_bar(fill = 'firebrick3', width = 0.9) +
+  scale_y_continuous(
+    breaks = c(0, 5000, 10000, 15000, 20000),
+    labels = c("0", "5k", "10k", "15k", "20k")
+  )+
+  theme_tufte(base_family = 'sans') +
+  xlab("")+
+  ylab('')+
+  ggtitle("Распределeние пациентов по возрастy",
+          "Данные: eICU CRD")+
+  theme(axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.text.y = element_text(colour = "black"),
+  )+
+  
+  ggplot(adults, aes(x = age))+
+  geom_boxplot( fill = 'transparent', colour = 'firebrick3')+
+  theme_tufte(base_family = 'sans') +
+  scale_y_continuous(breaks = NULL)+
+  xlab('Возраст, лет')+
+  scale_x_continuous(breaks = c(16, 53, 65, 76, 90))+
+  theme(axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'white'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'white'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.8), hjust = 0.2),
+        axis.text.x = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.text.y = element_text(colour = "black")) +
+  plot_layout(nrow = 2, heights = c(2, 0.5))
+
+
+```
+
+
+```{r, include=FALSE, warning= FALSE, echo = FALSE}
+gender_sorted <- adults %>% 
+  group_by(age_group, gender) %>% 
+  summarise(n = n())
+
+gender_sorted$n <- ifelse(
+  gender_sorted$gender == "Male", -1*gender_sorted$n, gender_sorted$n) 
+```
+
+```{r, echo=FALSE, fig.align='center', warning=FALSE}
+
+
+ggplot(gender_sorted, aes(x = age_group, y = n, fill = gender)) +   # Fill column
+  geom_bar(data = subset(gender_sorted, gender == "Female"), stat = "identity",width = 0.8) +
+  geom_bar(data = subset(gender_sorted, gender == "Male"), stat = "identity",width= 0.8) +
+  xlab('Возраст, лет')+
+  ylab('')+
+  scale_y_continuous(
+    breaks = c(-10000, -5000, 0, 5000, 10000),
+    labels = c("10k", "5k", "0", "5k", "10k")
+  )+
+  coord_flip() +  # Flip axes
+  
+  theme_tufte(base_family = 'sans') +  # Tufte theme from ggfortify
+  ggtitle("Распределeние пациентов по полу и возрасту",
+          "Данные: eICU CRD")+
+  guides(fill = guide_legend(title = NULL, reverse = TRUE))+
+  
+  theme(legend.text = element_text(size = 8), axis.ticks = element_blank(),
+        legend.background = element_rect(fill = "transparent",color = 'transparent'),
+        legend.position = c(0.8,0.2),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.text.y = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.title.y = element_text(size = rel(0.6),colour = "black",
+                      vjust= -25,hjust = 0.1)) +   # Centre plot title
+  scale_fill_manual(values = c('coral3','darkcyan'))  # Color palette
+
+
+
+
+```
+
+ 
+
+```{r setting the table adults,  echo = FALSE, include=FALSE}
+
+nrow(adults) #200583 before dropping NA
+
+sum(is.na(adults$gender)) #45 ->0
+adults <- adults %>%  # drop rows with NA
+  drop_na(gender)
+
+adults <- adults %>%  # убираем нейзвестный и другой пол(единичные)
+  filter(gender == 'Female'| gender == 'Male' ) 
+
+sum(is.na(
+  adults$unitdischargestatus)) # 34 missing values in unit outcomes
+
+adults <- adults %>%  # drop rows with NA
+  drop_na(unitdischargestatus)
+
+adults <- adults %>%  # drop rows with NA
+  drop_na(hospitaldischargestatus)
+
+
+# for (i in 1:nrow(adults)){   # колонка с временем поступления в реанимацию,приведенным к часам 
+#  adults$adm_h[i] <- format(as.POSIXct(
+#    adults$unitadmittime24[i],format="%H:%M:%S"),"%H")
+#}
+
+#все вышеперечисленное записано в таблицу для sqlзапросов
+
+mort_age <- dbGetQuery(     
+  mydb, 
+  'SELECT age_group,
+          count(stay_id) as stays,
+          sum(death) deaths
+          
+  FROM
+  (SELECT 
+          
+          distinct(patienthealthsystemstayid) as stay_id,
+          age_group,
+          death
+   FROM (SELECT *,
+   CASE
+		WHEN hospitaldischargestatus = "Expired" THEN
+			1
+		ELSE
+			0
+	END death
+   FROM adults
+   
+   ))
+  GROUP BY age_group 
+  '
+  )
+
+mort_age <- mort_age %>% # летальность в разных возратсных группах
+  mutate(mx = round((
+    (deaths/stays)*100),1
+  ))
+
+dead <- adults %>% 
+  filter(hospitaldischargestatus == 'Expired') 
+
+hosp_stat <- adults %>% 
+  group_by(hospitalid) %>% 
+  summarise(hosp_stays = n_distinct(patienthealthsystemstayid))
+
+hosp_stat$default <- 'hospital'
+
+
+hosp_outc <- dbGetQuery(    # добавляю колонку с исходом госпитализации  
+  mydb, 
+  'SELECT *,
+  CASE
+  WHEN hospitaldischargestatus = "Expired" THEN
+  1
+  ELSE
+  0
+  END death
+  FROM adults
+  '
+)
+
+age_gend_mx <- hosp_outc %>%  # высчитываю летальность для каждого госпиталя и возраста
+  group_by(hospitalid, age_group, gender) %>% 
+  summarise(mx = (sum(death)/n()*100)) 
+```
+
+### Количество клиник
+
+Все госпитализации распределились на 207 клиник.
+Медианное число госпитализаций на клинику - 475, минимальное - 3, максимальное - 5506. У половины клиник количество госпитализаций - между 215 и 1067.
+
+```{r, echo=FALSE, warning = FALSE, fig.align='center'}
+
+ggplot(hosp_stat, aes(x = default, y = hosp_stays))+
+ geom_jitter(size = 0.8, colour = 'darkred', width= 0.3)+
+  theme_tufte(base_family = 'sans') +
+  ggtitle("Распределение количества госпитализаций по клиникам:
+красные точки - индивидуальные значения клиник",
+          "Данные: eICU CRD")+
+  xlab('')+
+  ylab('Число госпитализаций')+
+ coord_flip()+
+ scale_x_discrete(breaks = NULL)+
+  scale_y_continuous(breaks = c(3,215,475,1067,5506))+
+  theme(axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, colour = 'black'), 
+        plot.subtitle = element_text(size = 8, colour = 'black'),
+        panel.grid.major = element_line(colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk"),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.9),
+                                   colour = 'black'),
+        axis.title.x = element_text(size = rel(0.9),
+                                    colour = 'black')
+       ) +
+      
+  ggplot(hosp_stat, aes(x = default, y = hosp_stays))+
+  geom_boxplot(fill = 'transparent',colour = 'black', width = 10)+
+  xlab('')+
+  ylab('')+
+  coord_flip()+
+  theme_tufte(base_family = 'sans') +
+  scale_x_discrete(breaks = NULL)+
+  scale_y_continuous(breaks = c(3,215,475,1067,5506))+
+theme(
+  axis.ticks = element_blank(),
+      plot.background = element_rect(
+        fill = 'cornsilk', colour = 'transparent'),
+      panel.grid.minor = element_blank(),
+   #   panel.grid.major = element_blank(),
+      axis.text.x = element_text(colour = "transparent")
+      )+
+  plot_layout(nrow = 2, heights = c(2, 0.5),guides='keep')
+
+
+
+```
+
+
+### Статус при выписке
+
+Колонки *unitdischargestatus* (исход нахождения в реанимации) и *hostpitaldischargestatus* (исход госпитализации) имеют два значения:‘Жив’ или ‘Умер’ ('Alive' или 'Expired').
+
+На основании этой информации можно делать выводы о летальности среди пациентов, включенных в базу данных.
+
+```{r, echo=FALSE}
+mort_age %>% 
+  summarise("Госпитализаций" = sum(stays),
+            "Летальных исходов" = sum(deaths),
+            "Летальность, в %" = mean(mx)) %>% 
+kable(caption = "Средняя летальность среди пациентов eICU CRD") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+
+```
+
+
+```{r,echo=FALSE, warning = FALSE, fig.align='center'}
+ ggplot(adults) + #летальность в разных возрастных группах
+  geom_bar(position = 'dodge',aes(x = age_group, fill = hospitaldischargestatus))+
+  theme_tufte(base_family = 'sans')+
+  scale_fill_manual(values = c("aquamarine4","black"))+
+  xlab("")+
+  ylab('Количество пациентов')+
+  scale_y_continuous(
+   breaks = c(0,5000,10000,15000,20000),
+  labels = c("0","5k","10k","15k","20k"))+
+  ggtitle("Распределeние исходов по возрастным группам:
+зеленые столбики - количество выживших,
+черные - количество умерших",
+          'Данные: eICU CRD')+
+  theme(axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.text.y = element_text(size = rel(0.8),
+                                   colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.y = element_text(colour = "black",
+                                    hjust = 0.1, vjust = 1.5,
+                                    size = rel(0.6)),
+    legend.position = 'none')
+
+
+```
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+hosp_outc <- dbGetQuery(    # добавляю колонку с исходом госпитализации  
+  mydb, 
+  'SELECT *,
+  CASE
+  WHEN hospitaldischargestatus = "Expired" THEN
+  1
+  ELSE
+  0
+  END death
+  FROM adults
+  '
+)
+
+
+age_hosp_mx <- hosp_outc %>%  # высчитываю летальность для каждого госпиталя и возраста
+  group_by(hospitalid, age_group) %>% 
+  summarise(mx = (sum(death)/n()*100))
+ 
+
+```
+
+
+```{r,echo=FALSE, warning = FALSE, fig.align='center'}
+ 
+
+ggplot(age_hosp_mx, aes(x = age_group,
+                        y = mx, col = age_group))+
+  stat_summary(fun.y =  mean, geom = "pointrange",
+               fun.min = median,
+               fun.max = mean, col = 'black') +
+  stat_summary(fun.y =  mean, geom = "point",
+               col = 'cornflowerblue', size = 3) +
+  stat_summary(fun = median, geom = "point", col = "coral2",
+               size = 3)+
+  theme_tufte(base_family = 'sans')+
+  ggtitle("Летальность в разных возрастных группах:
+синие точки - средние значения, красные точки - медианы",
+          "Данные: eICU CRD")+
+  xlab('Возрастные группы')+
+  ylab('Летальность, в %')+
+  theme(
+        axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = "cornsilk",
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+       
+               panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = rel(0.8),
+                                   colour = "black"),
+        axis.text.y = element_text(colour = "black"),
+        axis.title.y = element_text(size = rel(0.6),colour = "black",
+                                    vjust= -15,hjust = 0.8),
+        axis.title.x = element_text(colour = "black",
+                                    hjust = 0.9, vjust = 17,
+                                    size = rel(0.6))) 
+```
+
+
+```{r,echo=FALSE, warning = FALSE, fig.align='center'}
+
+ggplot(age_gend_mx, aes(x = age_group,y = mx, colour = gender))+
+
+  stat_summary(fun = mean, geom = "point",size= 3)+
+  ylim(0,50)+
+  ylab('Летальность, в %')+
+  xlab('Возраст')+
+  theme_tufte(base_family = 'sans')+
+  ggtitle("Средняя госпитальная летальность в зависимости от пола и возраста",
+          'Данные: eICU CRD')+
+  theme(axis.ticks = element_blank(),
+        legend.position = c(0.8,0.8),
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.9)),
+        axis.text.y = element_text(size = rel(0.9)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.9),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.1, vjust = 1.5,
+                                    size = rel(0.6))
+                                    )
+```
+
+> * Самая высокая летальность у пожилых;
+* Летальнось среди мужчин и женщин примерно одинакова с небольшим преобладанием мужской летальности практически во всех возрастных группах
+
+
+## Диагноз при поступлении, *apacheadmissiondx*
+
+Молодые пациенты чаще всего поступали в стационар с кетоацидозом, судорогами, передозировкой различными веществамии, травмой:
+
+```{r, echo=FALSE}
+adults %>%  # диагнозы при поступлении самых молодых
+  filter(age_group == '16-20') %>%
+  drop_na(apacheadmissiondx) %>% 
+  group_by(apacheadmissiondx) %>% 
+  count() %>%
+  arrange(desc(n)) %>% 
+  head(10)%>%
+  kbl(caption = "Самые распространенные диагнозы у пацентов 16-20 лет") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+  
+  #kable_styling(bootstrap_options = "striped", full_width = F, position = "left")
+```
+
+У самых пожилых лидерами по частоте являются пневмонии, застройная сердечная недостаточность, уроинфекция, цереброваскулярные заболевания, аритмии:  
+
+```{r, echo=FALSE}
+adults %>%  # диагнозы при поступлении самых пожилых  
+  filter(age_group == '86-90') %>%
+  drop_na(apacheadmissiondx) %>% 
+  group_by(apacheadmissiondx) %>%
+  count() %>%
+  arrange(desc(n)) %>% 
+  head(10)%>%
+  kbl(caption = "Самые распространенные диагнозы у пацентов 86-90 лет") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+```
+
+Лидеры по частоте встречаемости среди всех пациентов: пневомнии, инфаркт миокрада, инсульт:
+
+```{r, echo=FALSE}
+
+dx_hosp_rank <- dbGetQuery(        
+  mydb, 
+  'SELECT
+        
+        apacheadmissiondx as adm_dx,
+        count(distinct(patienthealthsystemstayid)) as count
+         
+          
+   FROM
+      adults
+  WHERE
+    adm_dx IS NOT NULL
+  GROUP BY adm_dx
+  ORDER BY count desc
+  LIMIT 10
+  ')
+dx_hosp_rank%>%
+  kbl(caption = "Самые частые диагнозы при поступлении в клинику") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+
+```
+Можно отсортировать самые частые диагнозы по летальности (стоит понимать, что это может быть неточная оценка, так как диагноз в ходе госпитализации мог поменяться -- по одной таблице patient это не отследить):
+
+
+
+```{r, include=FALSE, echo = FALSE}
+h_o_ad <-  dbGetQuery(    # группирую летальные госпитализации по самым частым диагнозам    
+    mydb, 
+  'SELECT *,
+  CASE
+  WHEN hospitaldischargestatus = "Expired" THEN
+  1
+  ELSE
+  0
+  END death
+  FROM adults
+  WHERE apacheadmissiondx IN ("Sepsis, pulmonary","Infarction, acute myocardial (MI)",
+                              "CVA, cerebrovascular accident/stroke", "CHF, congestive heart failure",
+                              "Sepsis, renal/UTI (including bladder)", "Diabetic ketoacidosis",
+                              "Rhythm disturbance (atrial, supraventricular)","CABG alone, coronary artery bypass grafting",
+                              "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)",
+                              "Emphysema/bronchitis")
+  '
+  )
+  
+mx_diseases <- h_o_ad %>%  # высчитываю летальность по диагнозам для каждого госпиталя
+  group_by(hospitalid, apacheadmissiondx) %>% 
+  summarise(mx = (sum(death)/n()*100))
+
+
+
+
+
+```
+
+
+```{r, include=FALSE, echo = FALSE}
+unittypes <- adults %>% 
+  group_by(unittype) %>% 
+    summarise('n_of_patients' = n())
+  
+
+description <-  c("Cardiac ICU",
+                         "Cardiac Care Unit/Cardiothoracic ICU",
+                         "Cardiac Surgery ICU",
+                         "Cardiothoracic ICU",
+                         "Medical-Surgical ICU",
+                         "Medical ICU",
+                         "Neuro ICU ",
+                         "Surgical ICU")
+
+description <- as.data.frame(description)
+for (el in 1:nrow(unittypes)){
+  unittypes$description[el] <- description$description[el]
+}
+```
+
+```{r, echo = FALSE, include = FALSE}
+u_o_ad <- dbGetQuery(        # создаем датасет с 1/0 по исходам отделений
+  mydb, 
+  'SELECT *,
+   CASE
+		WHEN unitdischargestatus = "Expired" THEN
+			1
+		ELSE
+			0
+	END death
+   FROM adults
+  '
+)
+
+mx_units <- u_o_ad %>%  # высчитываю летальность в отделениях для каждого госпиталя
+  group_by(hospitalid, unittype) %>% 
+  summarise(mx = (sum(death)/n()*100))
+
+
+```
+
+Показатели летальности в группах пациентов в десятью самыми частыми диагнозами при поступлении
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center'}
+
+
+ggplot(mx_diseases, aes(x=  reorder(apacheadmissiondx, -mx), y = mx))+
+  geom_boxplot(outlier.shape = NA, varwidth = TRUE, fill = 'black', colour = 'black')+
+  scale_x_discrete(labels= c("CABG alone, coronary artery bypass grafting" ="CABG",
+                             "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)" ="Card. arrest",
+                             "CHF, congestive heart failure"="CHF", 
+                             "CVA, cerebrovascular accident/stroke"="CVA",
+                             "Diabetic ketoacidosis" = "DKA",
+                             "Emphysema/bronchitis" = "Emphysema",
+                             "Infarction, acute myocardial (MI)" = "Acute MI",
+                             "Rhythm disturbance (atrial, supraventricular)" = "Rhytm disturb.",
+                             "Sepsis, pulmonary" = "Sepsis,pulm",
+                             "Sepsis, renal/UTI (including bladder)"= "Sepsis,UTI"))+
+  theme_tufte(base_family = 'sans')+
+  ylab("Летальность,в %")+
+  xlab("")+
+  stat_summary(fun.y=median, geom="point", 
+               shape=15, size=2, color="red", fill="red") +
+  coord_flip()+
+  ggtitle("Летальность в зависимости от диагноза поступления:
+красные крадраты - медианные значения,
+боковые границы черных прямоугольников - 25-е и 75-е перцентили,
+выбросы не показаны",
+          'Данные: eICU CRD')+
+  theme(axis.ticks = element_blank(),
+        legend.position = c(0.8,0.8),
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 12, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.9)),
+        axis.text.y = element_text(size = rel(0.9)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.5),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.5, vjust = 1.5,
+                                    size = rel(0.6))
+  )
+```
+
+
+
+проработать со сроками госпиатлизации, сравнить сроки в зависимости исходов, мб даже по диагнозам
+
+## Типы отделений
+
+```{r, echo = FALSE, fig.align='left'}
+unittypes %>%
+  arrange(desc(n_of_patients))  %>% 
+  kbl(caption = "Типы отделений в eICU CRD") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),full_width = F, position = "left")
+```
+> Больше всего пациентов пролечилось в...
+Самая большая медиана летальности в...
+
+```{r, echo = FALSE, fig.align='center'}
+
+ggplot(mx_units, aes(x = reorder(unittype, -mx), y = mx))+
+  geom_boxplot(varwidth = TRUE, fill = 'darkred', colour = 'black', alpha = 0.6)+
+  theme_tufte(base_family = 'sans')+
+  ggtitle("Летальность в зависимости от типа отделения", "Данные: eICU CRD")+
+  xlab('')+
+  ylab('Летальность, в %')+
+  theme(axis.ticks = element_blank(),
+        legend.position = c(0.8,0.8),
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.7)),
+        axis.text.y = element_text(size = rel(0.9)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.5),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.5, vjust = 1.5,
+                                    size = rel(0.6)))
+
+
+
+```
+
+```{r, echo = FALSE,  warning=FALSE,  include=FALSE}
+
+# переделываю dx_los в dplyr
+dx_los <- adults %>% 
+filter(apacheadmissiondx %in% c("Sepsis, pulmonary",
+                                "Infarction, acute myocardial (MI)",
+                        "CVA, cerebrovascular accident/stroke",
+                        "CHF, congestive heart failure",
+                        "Sepsis, renal/UTI (including bladder)",
+                        "Diabetic ketoacidosis",
+                        "Rhythm disturbance (atrial, supraventricular)",
+                        "CABG alone, coronary artery bypass grafting",
+                        "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)",
+                        "Emphysema/bronchitis")) %>% 
+ group_by(apacheadmissiondx) %>%
+  summarise(round(median(los_24h)),
+            round(mean(los_24h)),
+            round(sd(los_24h)))
+colnames(dx_los)[2] <- 'median_los'
+colnames(dx_los)[3] <- 'mean_los'
+colnames(dx_los)[4] <- 'sd'
+  
+dx_los %>%    # большие станд отконения, лучше через боксплоты
+kbl() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center")
+
+dx_los10 <- adults %>%  #отфильтрую для графика
+  filter(apacheadmissiondx %in% c("Sepsis, pulmonary",
+                                  "Infarction, acute myocardial (MI)",
+                                  "CVA, cerebrovascular accident/stroke",
+                                  "CHF, congestive heart failure",
+                                  "Sepsis, renal/UTI (including bladder)",
+                                  "Diabetic ketoacidosis",
+                                  "Rhythm disturbance (atrial, supraventricular)",
+                                  "CABG alone, coronary artery bypass grafting",
+                                  "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)",
+                                  "Emphysema/bronchitis"))
+
+```
+
+## Длительность госпитализации
+
+Вычислить сроки нахождения в отделении и в стационаре можно при помощи следующих колонок:  
+
+* *HospitalAdmitOffset* -- количество минут с момента поступления пациента в больницу до поступления в реанимацию;
+
+* *HospitalDischargeOffset* —- количество минут с момента попадания в реанимацию до момента выписки из больницы;
+
+* *unitDischargeOffset* -- количество минут от времени приема в реанимационное отделение до момента перевода из реанимации
+
+Ниже можно проследить хронологию переводов одного из пациентов:
+через 25 минут после поступления в стационар он поступил в Emergency Department, затем через 74 минуты (или через 99 минут с момента госпитализации) он был переведен в другое отделение интенсивной терапии, SDU (Step Down Unit, нечто среднее между реанимацей и обычной палатой). Через === минут он был переведен из SDU в обыное отделние. 
+Общая длительность госпитализации для этого пациента составила:
+= (5534 - (-25)) = (5460 - (-99)) = 5559 минут.
+
+```{r, echo=FALSE, fig.align='center'}
+adults %>% 
+  filter(patienthealthsystemstayid == 128943) %>% 
+  select(patienthealthsystemstayid,
+         patientunitstayid,
+         unitvisitnumber,
+         unittype,
+         unitadmitsource,
+         hospitaladmitoffset,unitdischargeoffset,
+         hospitaldischargeoffset) %>%
+         arrange(unitvisitnumber) %>% 
+kable("html") %>%
+  kable_paper(html_font = 'helvetica') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>% 
+  kable_styling("striped") %>% 
+  scroll_box(height = "160px")
+```
+
+После применения таких расчетов ко всем колонкам можно посмотреть статистку длительности нахождения в стационаре для пациентов разных возрастов.
+
+"Длительность госпитализации в разных возрастных группах",
+  "По горизонтали - возраст, по вертикали -  длительность госпитализации в сутках;
+жирные точки внутри 'ящиков' - медианные значения;
+исключены выбросы. превышающие 30 суток(6327 пациентов)"
+
+```{r, echo=FALSE, warning=FALSE, fig.align='center'}
+adults <- adults %>%     # вычисляем длительность госпитализации в сутках
+  mutate(los_24h = 
+           (hospitaldischargeoffset - hospitaladmitoffset)/1440)
+
+
+ggplot(adults, aes(x = age_group, y = los_24h))+
+  geom_jitter(alpha =1,width = 0.5, size = 0.1, colour = 'coral4')+
+  geom_boxplot(outlier.shape = NA,  col = 'black',
+               width= 0.9,fill = 'black')+
+  ylim(0,30)+
+  theme_tufte(base_family = 'sans')+
+  xlab('')+
+  ylab('Летальность, в %')+
+  theme_fivethirtyeight(base_family = 'sans', base_size = 10)+
+  stat_summary(fun.y=median, geom="point", 
+               shape=20, size=5, color="coral4") +
+  ggtitle("Длительность госпитализации 
+в разных возрастных группах",
+          "Данные: eICU CRD")+
+  theme(axis.ticks = element_blank(),
+        legend.position = c(0.8,0.8),
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.7)),
+        axis.text.y = element_text(size = rel(0.9)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.5),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.5, vjust = 1.5,
+                                    size = rel(0.6)))
+ 
+```
+
+
+*длительность госпитализации среди самых частых нозологий(все 57350 наблюдений)*
+
+```{r, echo = FALSE, include=FALSE, warning=FALSE, fig.align='center'}
+
+ggplot(dx_los10, aes(x = apacheadmissiondx, y = los_24h, #все наблюдения
+                     colour =  apacheadmissiondx))+
+  geom_point(position = "jitter", size = 1.0)+
+  theme_minimal()+
+  scale_color_simpsons()+
+  scale_x_discrete(labels= c("CABG alone, coronary artery bypass grafting" ="CABG",
+                             "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)" ="Card. arrest",
+                             "CHF, congestive heart failure"="CHF", 
+                             "CVA, cerebrovascular accident/stroke"="CVA",
+                             "Diabetic ketoacidosis" = "DKA",
+                             "Emphysema/bronchitis" = "Emphysema",
+                             "Infarction, acute myocardial (MI)" = "Acute MI",
+                             "Rhythm disturbance (atrial, supraventricular)" = "Rhytm disturb.",
+                             "Sepsis, pulmonary" = "Sepsis,pulm",
+                             "Sepsis, renal/UTI (including bladder)"= "Sepsis,UTI"))+
+  theme(legend.position = "none")
+
+```
+
+*длительность госпитализации среди самых частых нозологий, выбросы ограничены сотней суток(исключено 1400 наблюдений)* 
+
+Где то видел инфу, что толщину боксплота можно сделать зависмой от количества наблюдений
+
+```{r, echo = FALSE,  warning=FALSE, fig.align='center'}
+
+ggplot(dx_los10, aes(x = reorder(apacheadmissiondx, -los_24h), y = los_24h))+
+  geom_jitter(colour = 'lightsteelblue',size = 0.2)+
+  geom_boxplot(outlier.shape = NA, fill = 'transparent') +
+  theme_tufte(base_family = 'sans')+
+  xlab('')+
+  ylab('')+
+  ggtitle("Длительность госпитализации среди пациетнов
+с самыми частыми диагнозами",
+          "Данные: eICU CRD")+
+  coord_flip()+  # меняет оси
+  scale_fill_simpsons()+
+  scale_x_discrete(labels= c("CABG alone, coronary artery bypass grafting" ="CABG",
+                             "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)" ="Card. arrest",
+                             "CHF, congestive heart failure"="CHF", 
+                             "CVA, cerebrovascular accident/stroke"="CVA",
+                             "Diabetic ketoacidosis" = "DKA",
+                             "Emphysema/bronchitis" = "Emphysema",
+                             "Infarction, acute myocardial (MI)" = "Acute MI",
+                             "Rhythm disturbance (atrial, supraventricular)" = "Rhytm disturb.",
+                             "Sepsis, pulmonary" = "Sepsis,pulm",
+                             "Sepsis, renal/UTI (including bladder)"= "Sepsis,UTI"))+
+  theme(axis.ticks = element_blank(),
+        legend.position = 'none',
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.9)),
+        axis.text.y = element_text(size = rel(1.0)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.5),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.5, vjust = 1.5,
+                                    size = rel(0.6)))+
+ylim(0, 100)
+
+  
+```
+
+*Распределение частых диагнозов по возрастным группам. Бросается в глаза "молодой" диабетический кетоацидоз*
+
+```{r, echo=FALSE, fig.align='center', warning=FALSE, fig.align='center'}
+
+# возрасты по диагнозам
+ggplot(dx_los10, aes(x = apacheadmissiondx, y = age))+
+  geom_jitter(colour = 'darkorange2', size = 0.1)+
+  geom_boxplot(outlier.shape = NA, fill = 'transparent') +
+  theme_tufte(base_family = 'sans')+
+  xlab('')+
+  ylab('')+
+  ggtitle("Возраст пациентов в группах с различными диагнозами",
+          "Данные: eICU CRD")+
+  xlab("")+
+  ylab("Возраст")+
+  scale_x_discrete(labels= c("CABG alone, coronary artery bypass grafting" ="CABG",
+                             "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)" ="Card. arrest",
+                             "CHF, congestive heart failure"="CHF", 
+                             "CVA, cerebrovascular accident/stroke"="CVA",
+                             "Diabetic ketoacidosis" = "DKA",
+                             "Emphysema/bronchitis" = "Emphys.",
+                             "Infarction, acute myocardial (MI)" = "Acute MI",
+                             "Rhythm disturbance (atrial, supraventricular)" = "Rhytm dis.",
+                             "Sepsis, pulmonary" = "Sepsis,pul.",
+                             "Sepsis, renal/UTI (including bladder)"= "Sepsis,UTI"))+
+  theme(axis.ticks = element_blank(),
+        legend.position = 'none',
+        legend.background = element_rect(fill  = 'transparent'),
+        legend.title = element_blank(),
+        legend.text = element_text(size = rel(0.8)),
+        plot.title = element_text(size = 14, hjust = 0,
+                                  colour = 'black'),
+        plot.subtitle = element_text(size = 8, hjust = 0,
+                                     colour = 'black'),
+        panel.background = element_rect(fill = 'cornsilk',
+                                        colour = 'transparent'),
+        plot.background = element_rect(
+          fill = 'cornsilk', colour = 'transparent'),
+        axis.text.x = element_text(size = rel(0.9)),
+        axis.text.y = element_text(size = rel(1.0)),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = rel(0.6),
+                                    hjust = 0.5),
+        axis.title.y = element_text(colour = 'black',
+                                    hjust = 0.5, vjust = 1.5,
+                                    size = rel(0.6)))
+
+
+```
+
+
+
+
+
