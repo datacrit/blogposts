@@ -50,7 +50,7 @@ library(patchwork)
 library(tufte)
 library(ggthemes)
 
-# В этом скрипте работаю с SQL
+# настройка SQLite
 
 patient <- read_csv('/Users/serhio/physionet_data/e-icu-full/patient.csv')
 adults <- read_csv('/Users/serhio/R_PROJECTS/e_icu_full/adults_table.csv')
